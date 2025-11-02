@@ -35,6 +35,13 @@ int kern_init(void) {
     clock_init();   // init clock interrupt
     intr_enable();  // enable irq interrupt
 
+/*     cprintf("=== Starting exception tests ===\n");
+    cprintf("Test 1: Illegal instruction exception\n");
+    asm volatile(".word 0x00000000");
+    cprintf("Test 2: Breakpoint exception\n");
+    asm volatile("ebreak");
+    cprintf("=== Exception tests completed ===\n"); */
+    
     /* do nothing */
     while (1)
         ;
