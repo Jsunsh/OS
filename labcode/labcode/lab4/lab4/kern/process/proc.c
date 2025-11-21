@@ -104,7 +104,18 @@ alloc_proc(void)
          *       uint32_t flags;                             // Process flag
          *       char name[PROC_NAME_LEN + 1];               // Process name
          */
-        
+        proc->state = PROC_UNINIT;      // 初始状态：未初始化
+        proc->pid = -1;                 // pid 暂时设为 -1，等待 get_pid()
+        proc->runs = 0;                 // 运行次数清零
+        proc->kstack = 0;               // 内核栈指针尚未分配
+        proc->need_resched = 0;         // 不需要立即调度
+        proc->parent = NULL;            // 父进程为空
+        proc->mm = NULL;                // 内核线程无用户内存管理结构
+        memset(&(proc->context), 0, sizeof(struct context)); // 上下文清零
+        proc->tf = NULL;                // trapframe 初始化为空，后续由 copy_thread 设置
+        proc->pgdir = boot_pgdir_pa;    // 使用启动时的页表（内核线程共享）
+        proc->flags = 0;                // 标志位清零
+        memset(proc->name, 0, PROC_NAME_LEN + 1); // 名称清空
     }
     return proc;
 }
@@ -184,6 +195,24 @@ void proc_run(struct proc_struct *proc)
          *   lsatp():                   Modify the value of satp register
          *   switch_to():              Context switching between two processes
          */
+
+        // 声明 intr_flag 变量用于保存中断状态
+        bool intr_flag;
+
+        local_intr_save(intr_flag); // 关闭中断，防止切换过程中被打断
+
+        // 1. 记录旧进程，设置当前进程
+        struct proc_struct *old = current;
+        current = proc;
+
+        // 2. 切换页表（SATP 寄存器）
+        // 注意：proc->pgdir 是物理地址，需转换成 SATP 格式
+        lsatp((proc->pgdir) >> RISCV_PGSHIFT);
+
+        // 3. 执行上下文切换
+        switch_to(&(old->context), &(proc->context));
+
+        local_intr_restore(intr_flag); // 恢复中断
 
     }
 }
@@ -322,6 +351,39 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     //    5. insert proc_struct into hash_list && proc_list
     //    6. call wakeup_proc to make the new child process RUNNABLE
     //    7. set ret vaule using child proc's pid
+
+    // 1. 分配进程控制块
+    if ((proc = alloc_proc()) == NULL) {
+        goto fork_out;
+    }
+
+    // 2. 分配内核栈
+    if (setup_kstack(proc) != 0) {
+        goto bad_fork_cleanup_proc;
+    }
+
+    // 3. 复制内存管理信息（仅适用于用户进程；此处是内核线程，不做实际工作）
+    if (copy_mm(clone_flags, proc) != 0) {
+        goto bad_fork_cleanup_kstack;
+    }
+
+    // 4. 设置 trapframe 和 context
+    copy_thread(proc, stack, tf);
+
+    // 5. 获取唯一 PID
+    proc->pid = get_pid();
+
+    // 6. 将进程加入哈希表和链表
+    hash_proc(proc);
+    list_add(&proc_list, &(proc->list_link));
+
+    // 7. 唤醒进程使其变为 RUNNABLE
+    wakeup_proc(proc);
+
+    // 8. 更新进程总数，返回子进程 PID
+    nr_process++;
+    ret = proc->pid;
+
     
 fork_out:
     return ret;
