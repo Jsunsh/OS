@@ -124,6 +124,10 @@ alloc_proc(void)
          *       uint32_t wait_state;                        // waiting state
          *       struct proc_struct *cptr, *yptr, *optr;     // relations between processes
          */
+        proc->wait_state = 0;              // 等待状态初始化为0
+        proc->cptr = NULL;                 // 子进程指针初始化为空
+        proc->yptr = NULL;                 // 兄弟进程指针初始化为空
+        proc->optr = NULL;                 // 兄弟进程指针初始化为空
     }
     return proc;
 }
@@ -247,8 +251,8 @@ void proc_run(struct proc_struct *proc)
         current = proc;
 
         // 2. 切换页表（SATP 寄存器）
-        // 注意：proc->pgdir 是物理地址，需转换成 SATP 格式
-        lsatp((proc->pgdir) >> RISCV_PGSHIFT);
+        // 注意：proc->pgdir 是物理地址，lsatp函数内部会自动处理右移
+        lsatp(proc->pgdir);
 
         // 3. 执行上下文切换
         switch_to(&(old->context), &(proc->context));
@@ -469,6 +473,9 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     if ((proc = alloc_proc()) == NULL) {
         goto fork_out;
     }
+    // LAB5: 设置子进程的父进程为当前进程，并确保当前进程的wait_state为0
+    proc->parent = current;
+    current->wait_state = 0;
 
     // 2. 分配内核栈
     if (setup_kstack(proc) != 0) {
@@ -486,15 +493,16 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     // 5. 获取唯一 PID
     proc->pid = get_pid();
 
-    // 6. 将进程加入哈希表和链表
+    // 6. 将进程加入哈希表和链表，并设置进程关系
     hash_proc(proc);
-    list_add(&proc_list, &(proc->list_link));
+    // LAB5: 使用set_links设置进程关系（包括链表和父子兄弟关系）
+    // 注意：set_links已经包含了list_add和nr_process++，所以不需要重复
+    set_links(proc);
 
     // 7. 唤醒进程使其变为 RUNNABLE
     wakeup_proc(proc);
 
-    // 8. 更新进程总数，返回子进程 PID
-    nr_process++;
+    // 8. 返回子进程 PID
     ret = proc->pid;
 
     // LAB5 YOUR CODE : (update LAB4 steps)
